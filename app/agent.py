@@ -71,6 +71,9 @@ def run(prompt, fault='none', caller=model_call, persist=True):
         raise ValueError('Unknown fault mode.')
     trace = {'id': uuid.uuid4().hex, 'timestamp': time.time(), 'prompt': prompt,
              'model': MODEL, 'fault': fault, 'status': 'running', 'spans': []}
+    from app.security import ACTOR
+    actor=ACTOR.get()
+    if actor:trace.update(user_id=actor['sub'],username=actor['username'],user_roles=actor['roles'])
     start = time.perf_counter()
     began = start
     def span(name, began, **data):

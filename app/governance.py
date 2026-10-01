@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 from app.agent import MODEL, SYSTEM, NOTES, calculate, model_call, LOCK
 from app.telemetry import export_trace
+from app.security import ACTOR, LAST_DECISION, authorize, require, PolicyUnavailable, AccessDenied
 
 AGENTS = {
     'coordinator': {'role':'Delegates to specialists', 'tools':[], 'delegates':['analyst','researcher','publisher','expense_agent']},
@@ -75,11 +76,21 @@ def redact(value):
     return SECRET.sub('[REDACTED DEMO SECRET]',value)
 
 
-def gate(agent, action, rules, used=0):
+def gate(agent, action, rules, used=0, review_requester=None):
+    LAST_DECISION.set(None)
     if agent not in AGENTS or not isinstance(action,dict) or set(action)!={'tool','argument'} or type(action.get('argument')) is not str or len(action['argument'])>2000:
         return 'deny','invalid_action','Action shape or agent identity is invalid.'
     if action['tool'] not in AGENTS[agent]['tools']:
         return 'deny','role_permissions',f"{agent} cannot use {action['tool']}."
+    try:
+        amount=0
+        if action['tool']=='approve_expense':
+            try: amount=json.loads(action['argument']).get('amount',0)
+            except (ValueError,AttributeError): pass
+        external=authorize('tool',agent=agent,tool=action['tool'],used_budget=used,policy=rules,amount=amount,review=review_requester is not None,requester=review_requester or '')
+        if not external['allowed']:return 'deny','external_policy',external['reason']
+    except PolicyUnavailable as error:
+        return 'deny','external_policy_unavailable',str(error)
     if rules['block_demo_secrets'] and SECRET.search(action['argument']):
         return 'deny','demo_secret','Synthetic secret must not enter a tool.'
     if used >= rules['tool_budget']:
@@ -111,15 +122,18 @@ class Trace:
         self.start=time.perf_counter()
         self.data={'id':uuid.uuid4().hex,'timestamp':time.time(),'prompt':redact(prompt),'model':MODEL,
                    'fault':'none','status':'running','spans':[],'scenario':scenario,'policy_version':rules['version'],'decisions':[]}
+        actor=ACTOR.get()
+        if actor:self.data.update(user_id=actor['sub'],username=actor['username'],user_roles=actor['roles'])
     def add(self,name,agent='coordinator',began=None,parent=None,**values):
         now=time.perf_counter();began=now if began is None else began
         item={'name':name,'agent':agent,'id':uuid.uuid4().hex[:16],'start_offset_ms':round((began-self.start)*1000,2),
               'duration_ms':round((now-began)*1000,2),**values}
         if parent: item['parent_id']=parent
         self.data['spans'].append(item);return item['id']
-    def decision(self,agent,action,rules,used=0,parent=None):
-        outcome,rule,reason=gate(agent,action,rules,used)
+    def decision(self,agent,action,rules,used=0,parent=None,review_requester=None):
+        outcome,rule,reason=gate(agent,action,rules,used,review_requester)
         item={'agent':agent,'outcome':outcome,'rule':rule,'reason':reason,'policy_version':rules['version'],'action':json.loads(redact(json.dumps(action)))}
+        if LAST_DECISION.get():item['external_policy']=LAST_DECISION.get()
         self.data['decisions'].append(item)
         self.add('governance.check',agent,parent=parent,observation_type='guardrail',output=item)
         return outcome,reason
@@ -146,8 +160,9 @@ def run_team(prompt,agent='analyst',scenario='custom',caller=model_call,persist=
         t.add('governance.input','coordinator',observation_type='guardrail',output={'outcome':'deny','rule':'demo_secret','reason':'Synthetic secret blocked before model inference.'})
         t.data['decisions'].append({'outcome':'deny','rule':'demo_secret','reason':'Synthetic secret blocked before inference.','policy_version':rules['version']})
         return t.finish('blocked','Synthetic secret blocked before model inference.',persist)
+    delegation=require('delegate',agent='coordinator',target=agent)
     t.add('agent.coordinator',observation_type='agent',output={'delegate_to':agent,'source':'User-selected workflow'})
-    t.add('governance.delegation',observation_type='guardrail',output={'outcome':'allow','from':'coordinator','to':agent,'policy_version':rules['version']})
+    t.add('governance.delegation',observation_type='guardrail',output={'outcome':'allow','from':'coordinator','to':agent,'policy_version':rules['version'],'external_policy':delegation})
     began=time.perf_counter();parent=t.add('agent.'+agent,agent,observation_type='agent',output=AGENTS[agent]['role'])
     try:
         if config.get('delegate'):
@@ -176,9 +191,12 @@ def run_team(prompt,agent='analyst',scenario='custom',caller=model_call,persist=
         if outcome=='deny': return t.finish('blocked',reason,persist)
         if outcome=='approval_required':
             approval_id=uuid.uuid4().hex
-            body={'agent':agent,'action':action,'policy_version':rules['version'],'run_id':t.data['id'],'used_budget':used,
+            body={'agent':agent,'action':action,'policy_version':rules['version'],'run_id':t.data['id'],'used_budget':used,'requester':ACTOR.get(),
                   'digest':hashlib.sha256(json.dumps(action,sort_keys=True).encode()).hexdigest()}
             with db() as c: c.execute('INSERT INTO approvals VALUES (?,?,?,?)',(approval_id,json.dumps(body),'pending',time.time()+900))
+            if os.getenv('AUTH_ENABLED')=='true':
+                from app.workflow import invoke
+                invoke(approval_id)
             t.data['approval_id']=approval_id
             return t.finish('awaiting_approval','Report drafted. Review the exact action in the approval queue.',persist)
         tool_start=time.perf_counter()
@@ -212,7 +230,10 @@ def resolve(approval_id,decision,persist=True):
         c.execute('BEGIN IMMEDIATE')
         row=c.execute('SELECT body,state,expires FROM approvals WHERE id=?',(approval_id,)).fetchone()
         if not row or row[1]!='pending': raise ValueError('Approval is missing or has already been resolved.')
-        body=json.loads(row[0]);rules=json.loads(c.execute('SELECT body FROM policy WHERE id=1').fetchone()[0])
+        body=json.loads(row[0])
+        requester=body.get('requester') or {}
+        require('review',requester=requester.get('sub',''))
+        rules=json.loads(c.execute('SELECT body FROM policy WHERE id=1').fetchone()[0])
         t=Trace('Human decision on simulated report','approval_resolution',rules)
         t.data.update(approval_id=approval_id,original_run_id=body['run_id'])
         digest=hashlib.sha256(json.dumps(body['action'],sort_keys=True).encode()).hexdigest()
@@ -221,7 +242,7 @@ def resolve(approval_id,decision,persist=True):
         elif decision=='reject': state='rejected';reason='Human rejected the report.'
         elif rules['version']!=body['policy_version']: state='blocked';reason='Policy changed since drafting. Create a new draft.'
         else:
-            outcome,reason=t.decision(body['agent'],body['action'],rules,body['used_budget'])
+            outcome,reason=t.decision(body['agent'],body['action'],rules,body['used_budget'],review_requester=requester.get('sub','') if ACTOR.get() else None)
             state='approved' if outcome=='approval_required' else 'blocked'
         t.add('governance.human_decision','human',observation_type='guardrail',input=body['action'],output={'decision':decision,'outcome':state,'reason':reason,'original_run_id':body['run_id']})
         if state=='approved':
@@ -229,5 +250,7 @@ def resolve(approval_id,decision,persist=True):
             c.execute('INSERT INTO reports VALUES (?,?,?,?)',(report_id,approval_id,body['action']['argument'],time.time()))
             t.add('tool.'+body['action']['tool'],body['agent'],input=body['action'],output={'report_id':report_id,'simulated':True})
             reason='Approved: action saved to the local simulated report store. No payment or external action occurred.'
-        c.execute('UPDATE approvals SET state=? WHERE id=?',(state,approval_id))
+        t.data.update(status='ok' if state=='approved' else state,answer=reason,duration_ms=round((time.perf_counter()-t.start)*1000,2))
+        body['resolution_trace']=t.data
+        c.execute('UPDATE approvals SET state=?,body=? WHERE id=?',(state,json.dumps(body),approval_id))
     return t.finish('ok' if state=='approved' else state,reason,persist)

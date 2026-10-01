@@ -6,6 +6,7 @@ A local learning demo using an existing pretrained Qwen2.5 0.5B model (~398 MB),
 
 ```sh
 python3 scripts/init_env.py
+python3 scripts/setup_identity.py
 docker compose up --build -d
 ```
 
@@ -57,10 +58,12 @@ Trace storage grows with usage and includes your prompts. This demo is bound to 
 
 ```sh
 curl http://localhost:8080/api/health
-curl -H 'Content-Type: application/json' -d '{"prompt":"What is 7 * 8?"}' http://localhost:8080/api/run
-curl -H 'Content-Type: application/json' -d '{}' http://localhost:8080/api/evaluate
-docker compose run --rm --no-deps demo python -m unittest discover -s tests -v
+curl -H "Authorization: Bearer $MICRO_TOKEN" -H 'Content-Type: application/json' -d '{"prompt":"What is 7 * 8?"}' http://localhost:8080/api/run
+curl -H "Authorization: Bearer $MICRO_TOKEN" -H 'Content-Type: application/json' -d '{}' http://localhost:8080/api/evaluate
+docker compose exec -T -e AUTH_ENABLED=false -e OPA_URL= demo python -m unittest discover -s tests -v
 ```
+
+Protected API examples require a Keycloak access token in `MICRO_TOKEN`; use browser sign-in for the walkthrough.
 
 `/api/health` reports the actual installed model size and checks it is below 1,000,000,000 bytes. Unit tests use injected model responses to check the harness independently; the UI evaluation uses real inference.
 
@@ -143,12 +146,48 @@ The publisher writes only to a local SQLite report table. It cannot send email, 
 - `DEMO_SECRET=...` is a synthetic data-disclosure pattern. When enabled it is blocked before inference and before tools. The pattern is redacted from governance traces even if the blocking toggle is off. This is a teaching rule, not comprehensive secret detection.
 - Policy changes are recorded in the audit trace stream.
 
-This is a localhost learning app: any person with access to it can change policy and approve drafts. The reviewer is labeled `human`, without separate login, authenticated identity, or separation of duties. Langfuse's login controls its dashboard, not the demo's approval API. Production use would require reviewer authentication, authorization, tamper-resistant audit storage, and stronger data controls.
+The demo now requires Keycloak identities for API access. OPA enforces separate requester, approver, and administrator roles and prevents self-approval. LangGraph persists approval pauses. Langfuse has its own dashboard login. The stack remains a local development demo; production still requires HTTPS, hardened identity deployment, and tamper-resistant audit storage.
 
 State survives container restarts in `governance.sqlite` inside the existing traces volume. Tests isolate state in temporary databases. API endpoints: `GET /api/governance`, `POST /api/team/run`, `POST /api/policy`, and `POST /api/approvals/resolve`. Write requests require JSON and reject browser cross-origin requests.
 
-Implementation: `app/governance.py`. Run all harness/governance/export tests with `docker compose exec -T demo python -m unittest discover -s tests -v`.
+Implementation: `app/governance.py`. Run all harness/governance/export tests with `docker compose exec -T -e AUTH_ENABLED=false -e OPA_URL= demo python -m unittest discover -s tests -v`.
 
 ## Local security workshop
 
 The UI includes eight exercises inspired by the Auxin Azure workshop: cited HR retrieval, synthetic expense reading/approval, unknown-report and amount-threshold denials, actual tool-budget exhaustion, and distinct task/compliance evaluation. See [workshop/README.md](workshop/README.md) for the four-session walkthrough and explicit differences from Azure. The expense agent uses the same persistent human approval queue; an approved expense produces only a local simulated action receipt.
+
+
+## Authenticated governance: OPA + Keycloak + LangGraph
+
+Open http://localhost:8080 and click **Sign in / switch account**. Keycloak runs at http://localhost:8180. Three distinct local identities are provisioned:
+
+| Username | Password in `.env` | Authority |
+| --- | --- | --- |
+| requester | `REQUESTER_PASSWORD` | Start model/workshop workflows and request simulated writes |
+| approver | `APPROVER_PASSWORD` | Approve or reject actions requested by another identity |
+| administrator | `GOVERNANCE_ADMIN_PASSWORD` | Change governance policy |
+
+The Keycloak console bootstrap account is `admin`, with `KEYCLOAK_ADMIN_PASSWORD`. It is separate from the application's `administrator` identity. The Langfuse login stays `demo@micro.local` with `LANGFUSE_INIT_USER_PASSWORD`.
+
+### Demonstrate separation of duties
+
+1. Sign in as **requester**, run **Approve a $250 synthetic expense**, and inspect the exact action. The approval workflow pauses and persists a LangGraph checkpoint.
+2. Try to approve it as requester: the button is disabled, and the API independently denies the request.
+3. Sign out, then sign in as **approver**. Approve the request. OPA rechecks role, requester identity, tool permission, budget, and write limit; SQLite commits one simulated receipt.
+4. Sign in as **administrator** and save a changed policy. This identity can administer policy but cannot start or approve workflows.
+5. Create a fresh draft as requester; change policy as administrator; approve as approver. The stale draft is blocked. Old drafts created before authentication was installed cannot be approved; create a new one.
+6. Inspect the Langfuse trace. Verified subject ID, username, and roles are recorded, and approval traces link to the requester's original run.
+
+### Enforcement and durability
+
+OPA policy is in `policy/governance.rego` and runs in a separate internal Docker service. API and tool authorization use `/v1/data/micro/decision`. An undefined result, malformed response, missing configuration, timeout, or OPA outage stops access; there is no permissive fallback in the running app. The harness additionally validates argument structure, canonical expense data, approval integrity, expiry, and policy version. Restart OPA after editing its policy: `docker compose restart opa`.
+
+Keycloak sign-in uses authorization code flow with PKCE, state, and nonce. Python verifies JWT signature, issuer, audience, and expiry. Browser sessions are stored server-side with hashed cookie identifiers; cookies are HttpOnly and SameSite=Lax, and authenticated writes require a CSRF token. Sessions last at most five minutes; sign in again when they expire. Access tokens are also accepted for API tests, with the same verification. Tokens, passwords, and authorization callback codes are not recorded in traces or HTTP request logs.
+
+LangGraph uses `workflow.sqlite` in the existing traces volume to checkpoint the approval interrupt. On review, it resumes the same thread and invokes the governed execution node. Side effects and resolved approval state commit in one SQLite transaction. A saved resolution makes checkpoint recovery idempotent if execution committed before a process failure. Replay of a completed workflow is rejected. Checkpoints, approvals, sessions, and local receipts survive container restarts.
+
+This is a localhost development identity setup: Keycloak uses `start-dev` and its persistent H2 database; HTTP cookies are not marked Secure because the local app runs on HTTP. The client enables password grants for integration testing; browser login uses PKCE. Do not expose it publicly as configured. Roles in browser sessions can remain valid until the five-minute session expires, and bearer tokens until their token expiry. This is not immediate revocation or immutable audit storage.
+
+Initialization files are generated from private `.env` values. `keycloak/micro-realm.json` is excluded from Git and the app build context. Existing imported realms are kept on restart; regenerating the JSON does not change existing user passwords. Configure live user changes in Keycloak.
+
+Files: `app/auth.py`, `app/security.py`, `app/workflow.py`, `policy/governance.rego`, and `scripts/setup_identity.py`. Unit tests disable external integration in their isolated execution environment; the live Docker app always has authentication and OPA enabled.

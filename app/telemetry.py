@@ -21,6 +21,9 @@ def payload(trace, system_prompt):
               'langfuse.trace.metadata.fault': trace['fault'],
               'langfuse.trace.metadata.run_id': trace['id'],
               'langfuse.trace.metadata.status': trace['status']}
+    if trace.get('user_id'): common['langfuse.user.id']=trace['user_id']
+    if trace.get('username'): common['langfuse.trace.metadata.username']=trace['username']
+    if trace.get('user_roles'): common['langfuse.trace.metadata.roles']=trace['user_roles']
     for key in ('scenario','policy_version','original_run_id','approval_id'):
         if key in trace: common['langfuse.trace.metadata.'+key]=trace[key]
     def make(name, start, end, values, parent=None, error=None):

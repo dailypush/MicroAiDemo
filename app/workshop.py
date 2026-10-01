@@ -87,8 +87,11 @@ def run(lab,question='How many days of annual leave?',caller=model_call,persist=
         if outcome=='deny':return t.finish('blocked',reason+f' Executed {used} tool calls in this workflow.',persist)
         if outcome=='approval_required':
             approval_id=uuid.uuid4().hex
-            body={'agent':'expense_agent','action':action,'policy_version':rules['version'],'run_id':t.data['id'],'used_budget':used,'digest':hashlib.sha256(json.dumps(action,sort_keys=True).encode()).hexdigest()}
+            body={'agent':'expense_agent','action':action,'policy_version':rules['version'],'run_id':t.data['id'],'used_budget':used,'requester':g.ACTOR.get(),'digest':hashlib.sha256(json.dumps(action,sort_keys=True).encode()).hexdigest()}
             with g.db() as c:c.execute('INSERT INTO approvals VALUES (?,?,?,?)',(approval_id,json.dumps(body),'pending',time.time()+900))
+            if __import__('os').getenv('AUTH_ENABLED')=='true':
+                from app.workflow import invoke
+                invoke(approval_id)
             t.data['approval_id']=approval_id
             return t.finish('awaiting_approval','Review this exact synthetic expense in the human approval queue. No payment will occur.',persist)
         t.add('tool.read_expense','expense_agent',parent=parent,input=args,output=expense)

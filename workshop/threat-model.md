@@ -20,7 +20,7 @@ For each boundary, record an attacker goal, a STRIDE category, likelihood/impact
 - Model instructions are not authority. Server-defined tool and delegation permissions block privilege proposals.
 - Expense IDs and canonical amounts are checked by the harness. Amounts above $1,000 are denied before human approval. Try an invented report and altered amount in the tests.
 - Approval binds exact action text, hash, policy version, expiration, and remaining budget. SQLite transactions and single-use approval states block replay. Anyone who can edit the database remains trusted; a hash stored beside the payload is not protection against a database administrator.
-- Browser cross-origin writes are rejected, but the local app has no authenticated reviewer identity. Local access means governance-admin and reviewer access. Separate authentication/authorization is an explicit missing control.
+- Browser cross-origin writes and missing CSRF tokens are rejected. Keycloak verifies identities, while OPA enforces requester/approver/administrator roles and separation of duties. Review policy decisions in Langfuse. Local development HTTP, eventual role revocation, and trusted database administrators remain boundaries to discuss.
 - Synthetic secrets are blocked by a narrow pattern and redacted from governance traces. Langfuse receives prompts/results; no general data classification or DLP is implemented.
 - Tool-call budgets are enforced. Model HTTP timeout and output/context caps are bounded; cumulative model-token limits, trace retention, and rate limiting are not implemented.
 - Langfuse makes evidence inspectable. It does not decide whether a tool may execute; enforcement belongs in the harness.

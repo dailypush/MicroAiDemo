@@ -2,7 +2,7 @@
 
 Inspired by the [Auxin Azure GenAI Security Workshop](https://github.com/Auxin-io/Azure-GenAI-Security-Workshop). These are original local adaptations of its learning patterns. They do not run the Azure notebooks or require workshop credentials.
 
-Start the existing stack with `docker compose up --build -d`, then open http://localhost:8080. Choose exercises under **Local security workshop**. Langfuse is at http://localhost:3000. Your Qwen model remains under 1 GB; all agents share it.
+Start the existing stack with `docker compose up --build -d`, then open http://localhost:8080 and sign in as requester. Switch to approver when reviewing a pending action, or administrator when changing policy. Choose exercises under **Local security workshop**. Langfuse is at http://localhost:3000. Your Qwen model remains under 1 GB; all agents share it.
 
 | Source session | Local equivalent | Difference |
 | --- | --- | --- |
@@ -51,4 +51,4 @@ The existing live agent prompt/policy versions are visible through trace metadat
 
 Every executed lab stores a local trace and exports it to Langfuse. Governance checks include reasons and policy versions; expense actions nest below their specialist. Approval decisions use separate traces linked to the original run. Evaluator verdicts are in observation output, not Langfuse's native score table.
 
-All reviewers share the local app; there is no authenticated separation of duties. Model output is untrusted. Approval storage is persistent SQLite, not a tamper-proof audit system. The model and deterministic fixtures must be distinguished when presenting results. Do not use real expenses, employee records, secrets, or payments in this demo.
+Reviewers now sign in through Keycloak; OPA separates requester, approver, and administrator roles and denies self-approval. Model output is untrusted. Approval storage is persistent SQLite, not a tamper-proof audit system. The model and deterministic fixtures must be distinguished when presenting results. Do not use real expenses, employee records, secrets, or payments in this demo.

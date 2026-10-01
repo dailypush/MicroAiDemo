@@ -3,3 +3,5 @@ __pycache__/
 traces.jsonl
 
 .env
+
+keycloak/micro-realm.json

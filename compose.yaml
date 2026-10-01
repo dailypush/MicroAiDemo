@@ -38,6 +38,11 @@ services:
       LANGFUSE_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY}
       LANGFUSE_UI_URL: http://localhost:3000
       LANGFUSE_PROJECT_ID: micro-ai-demo
+      AUTH_ENABLED: 'true'
+      OPA_URL: http://opa:8181
+      OIDC_INTERNAL_URL: http://keycloak:8080/realms/micro
+      OIDC_ISSUER: http://localhost:8180/realms/micro
+      OIDC_CLIENT_ID: micro-app
     volumes:
     - traces:/data
     depends_on:
@@ -45,6 +50,10 @@ services:
         condition: service_completed_successfully
       langfuse-web:
         condition: service_healthy
+      opa:
+        condition: service_started
+      keycloak:
+        condition: service_started
     init: true
   langfuse-worker:
     image: docker.langfuse.com/langfuse/langfuse-worker:4
@@ -219,6 +228,29 @@ services:
       PGTZ: UTC
     volumes:
     - langfuse_postgres_data:/var/lib/postgresql/data
+  opa:
+    image: openpolicyagent/opa:1.21.1
+    command:
+    - run
+    - --server
+    - --addr=0.0.0.0:8181
+    - /policy/governance.rego
+    volumes:
+    - ./policy:/policy:ro
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.0
+    command:
+    - start-dev
+    - --import-realm
+    ports:
+    - 127.0.0.1:8180:8080
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KC_HOSTNAME: http://localhost:8180
+    volumes:
+    - ./keycloak/micro-realm.json:/opt/keycloak/data/import/micro-realm.json:ro
+    - keycloak_data:/opt/keycloak/data
 volumes:
   models: null
   traces: null
@@ -232,3 +264,4 @@ volumes:
     driver: local
   langfuse_redis_data:
     driver: local
+  keycloak_data: null
