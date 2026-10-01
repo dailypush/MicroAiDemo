@@ -53,7 +53,7 @@ def payload(trace, system_prompt):
                            'langfuse.observation.usage_details':json.dumps({'input':item['input_tokens'],'output':item['output_tokens']}),
                            'langfuse.observation.model.parameters':json.dumps({'temperature':0,'num_ctx':2048,'num_predict':180})})
         elif name.startswith('tool.'):
-            values.update({'langfuse.observation.type':'tool', 'langfuse.observation.input':json.dumps(item.get('input',trace.get('action')))})
+            values.update({'langfuse.observation.type':item.get('observation_type','tool'), 'langfuse.observation.input':json.dumps(item.get('input',trace.get('action')))})
         elif name == 'harness.validate':
             values.update({'langfuse.observation.type':'guardrail', 'langfuse.observation.input':json.dumps(item['action'])})
         began = start_ns + int(item['start_offset_ms'] * 1e6)

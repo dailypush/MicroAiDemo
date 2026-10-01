@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Semaphore
 from app.agent import URL, MODEL, LOCK, run, evaluate
-from app import governance
+from app import governance, workshop
 
 BUSY = Semaphore(1)
 
@@ -33,6 +33,16 @@ class Handler(BaseHTTPRequestHandler):
                 self.send({'ready': model['size'] < 1_000_000_000, 'model': MODEL, 'model_bytes': model['size']})
             except Exception as error:
                 self.send({'ready': False, 'error': str(error)}, 503)
+        elif self.path in ('/workshop','/workshop/threat-model'):
+            name='README.md' if self.path=='/workshop' else 'threat-model.md'
+            root=Path('/demo/workshop') if Path('/demo').exists() else Path('workshop')
+            data=(root/name).read_bytes()
+            self.send_response(200)
+            self.send_header('Content-Type','text/plain; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(data)
+        elif self.path == '/api/workshop':
+            self.send({'labs':workshop.LABS,'expenses':workshop.EXPENSES,'documents':workshop.DOCUMENTS})
         elif self.path == '/api/governance':
             self.send({'agents':governance.AGENTS,'scenarios':governance.SCENARIOS,'policy':governance.policy(),'approvals':governance.approvals(),'reports':governance.reports()})
         elif self.path == '/api/traces':
@@ -49,7 +59,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send({'error': 'Not found'}, 404)
 
     def do_POST(self):
-        if self.path not in ('/api/run', '/api/evaluate', '/api/team/run', '/api/approvals/resolve', '/api/policy'):
+        if self.path not in ('/api/run', '/api/evaluate', '/api/team/run', '/api/approvals/resolve', '/api/policy', '/api/workshop/run'):
             return self.send({'error': 'Not found'}, 404)
         origin=self.headers.get('Origin')
         if origin and origin != 'http://' + self.headers.get('Host',''):
@@ -65,7 +75,8 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(size))
             if not isinstance(body, dict):
                 raise ValueError('Request must be a JSON object.')
-            if self.path == '/api/evaluate': result=evaluate()
+            if self.path == '/api/workshop/run': result=workshop.run(body.get('lab'),body.get('question','How many days of annual leave?'))
+            elif self.path == '/api/evaluate': result=evaluate()
             elif self.path == '/api/team/run': result=governance.run_team(body.get('prompt'),body.get('agent','analyst'),body.get('scenario','custom'))
             elif self.path == '/api/approvals/resolve': result=governance.resolve(body.get('approval_id'),body.get('decision'))
             elif self.path == '/api/policy':

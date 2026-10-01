@@ -16,9 +16,10 @@ from app.agent import MODEL, SYSTEM, NOTES, calculate, model_call, LOCK
 from app.telemetry import export_trace
 
 AGENTS = {
-    'coordinator': {'role':'Delegates to specialists', 'tools':[], 'delegates':['analyst','researcher','publisher']},
+    'coordinator': {'role':'Delegates to specialists', 'tools':[], 'delegates':['analyst','researcher','publisher','expense_agent']},
     'analyst': {'role':'Calculates numbers', 'tools':['calculator','finish'], 'delegates':[]},
     'researcher': {'role':'Explains local concepts', 'tools':['lookup','finish'], 'delegates':[]},
+    'expense_agent': {'role':'Reads synthetic expenses and requests approval', 'tools':['read_expense','approve_expense','finish'], 'delegates':[]},
     'publisher': {'role':'Drafts simulated reports for human approval', 'tools':['publish_report','finish'], 'delegates':[]},
 }
 DEFAULT = {'version':1, 'tool_budget':2, 'allow_publish':True, 'approval_required':True, 'block_demo_secrets':True}
@@ -83,6 +84,22 @@ def gate(agent, action, rules, used=0):
         return 'deny','demo_secret','Synthetic secret must not enter a tool.'
     if used >= rules['tool_budget']:
         return 'deny','tool_budget','Run has exhausted its tool-call budget.'
+    if action['tool'] in ('read_expense','approve_expense'):
+        from app.workshop import EXPENSES
+        try:
+            args=json.loads(action['argument'])
+        except (ValueError,TypeError):
+            return 'deny','expense_arguments','Expense arguments must be JSON.'
+        if not isinstance(args,dict) or set(args)!=({'report_id'} if action['tool']=='read_expense' else {'report_id','amount','currency'}):
+            return 'deny','expense_arguments','Invalid expense argument fields.'
+        expense=EXPENSES.get(args.get('report_id')) if isinstance(args.get('report_id'),str) else None
+        if not expense: return 'deny','report_exists','Expense report does not exist.'
+        if action['tool']=='approve_expense':
+            if type(args['amount']) not in (int,float) or args['amount']!=expense['amount'] or args['currency']!=expense['currency']:
+                return 'deny','canonical_amount','Requested amount or currency does not match the stored expense.'
+            if expense['amount']>1000: return 'deny','amount_threshold','Amount exceeds the local $1,000 approval threshold; no human request created.'
+            if not rules['allow_publish']: return 'deny','writes_disabled','Simulated writes are disabled by current policy.'
+            return 'approval_required','human_approval','Human must approve this exact expense ID, amount, and currency.'
     if action['tool']=='publish_report':
         if not rules['allow_publish']: return 'deny','publishing_disabled','Publishing is disabled by current policy.'
         return 'approval_required','human_approval','Publishing requires approval of this exact report.'
@@ -144,6 +161,9 @@ def run_team(prompt,agent='analyst',scenario='custom',caller=model_call,persist=
         else:
             tools=AGENTS[agent]['tools']
             system=SYSTEM+'\nYour agent identity is '+agent+'. You may choose only '+', '.join(tools)+'. For publish_report, argument is the report text.'
+            if agent=='expense_agent':
+                from app.workshop import EXPENSES
+                system+=' For read_expense, argument is a JSON string with report_id. For approve_expense, argument is a JSON string with report_id, amount, currency. Stored synthetic expenses: '+json.dumps(EXPENSES)
             schema={'type':'object','properties':{'tool':{'type':'string','enum':tools},'argument':{'type':'string'}},'required':['tool','argument'],'additionalProperties':False}
             model_start=time.perf_counter();response=caller(prompt,system=system,schema=schema)
             raw=response['message']['content']
@@ -164,6 +184,9 @@ def run_team(prompt,agent='analyst',scenario='custom',caller=model_call,persist=
         tool_start=time.perf_counter()
         if action['tool']=='calculator': result=calculate(action['argument'])
         elif action['tool']=='lookup': result=NOTES[action['argument'].strip().lower()]
+        elif action['tool']=='read_expense':
+            from app.workshop import EXPENSES
+            result=json.dumps(EXPENSES[json.loads(action['argument'])['report_id']])
         else: result=action['argument']
         t.add('tool.'+action['tool'],agent,began=tool_start,parent=parent,input=action,output=redact(result))
         t.add('harness.return_answer',agent,parent=parent,output=redact(result))
@@ -204,7 +227,7 @@ def resolve(approval_id,decision,persist=True):
         if state=='approved':
             report_id=uuid.uuid4().hex
             c.execute('INSERT INTO reports VALUES (?,?,?,?)',(report_id,approval_id,body['action']['argument'],time.time()))
-            t.add('tool.publish_report',body['agent'],input=body['action'],output={'report_id':report_id,'simulated':True})
-            reason='Approved: report saved to the local simulated report store.'
+            t.add('tool.'+body['action']['tool'],body['agent'],input=body['action'],output={'report_id':report_id,'simulated':True})
+            reason='Approved: action saved to the local simulated report store. No payment or external action occurred.'
         c.execute('UPDATE approvals SET state=? WHERE id=?',(state,approval_id))
     return t.finish('ok' if state=='approved' else state,reason,persist)

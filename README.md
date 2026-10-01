@@ -112,10 +112,11 @@ The governed workflow is above the original lab at http://localhost:8080. All ag
 
 | Agent | Tools | Delegation |
 | --- | --- | --- |
-| Coordinator | None | Dispatches to analyst, researcher, or publisher |
+| Coordinator | None | Dispatches to analyst, researcher, publisher, or expense agent |
 | Analyst | Calculator, direct answer | None |
 | Researcher | Local glossary, direct answer | None |
 | Publisher | Simulated report publishing, direct answer | None |
+| Expense agent | Synthetic expense reads and approval requests | None |
 
 The coordinator dispatches the workflow selected by the user. Custom requests and the allowed-calculation scenario use real model inference for the specialist's action. Violation and approval scenarios use **explicit, labeled action fixtures** for repeatable demos. This is a bounded workflow with role-specific model prompts, not an autonomous multi-agent planner.
 
@@ -147,3 +148,7 @@ This is a localhost learning app: any person with access to it can change policy
 State survives container restarts in `governance.sqlite` inside the existing traces volume. Tests isolate state in temporary databases. API endpoints: `GET /api/governance`, `POST /api/team/run`, `POST /api/policy`, and `POST /api/approvals/resolve`. Write requests require JSON and reject browser cross-origin requests.
 
 Implementation: `app/governance.py`. Run all harness/governance/export tests with `docker compose exec -T demo python -m unittest discover -s tests -v`.
+
+## Local security workshop
+
+The UI includes eight exercises inspired by the Auxin Azure workshop: cited HR retrieval, synthetic expense reading/approval, unknown-report and amount-threshold denials, actual tool-budget exhaustion, and distinct task/compliance evaluation. See [workshop/README.md](workshop/README.md) for the four-session walkthrough and explicit differences from Azure. The expense agent uses the same persistent human approval queue; an approved expense produces only a local simulated action receipt.
